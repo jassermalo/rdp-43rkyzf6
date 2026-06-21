@@ -61,41 +61,62 @@ jobs:
           Restart-Service -Name TermService -Force
           Write-Host "✅ RDP configured"
 
-      - name: "👤 Create User Accounts"
+      - name: "👤 Create User Accounts via SYSTEM Task"
         shell: pwsh
         run: |
-          # Use ADSI to set passwords — bypasses all password policy restrictions
-          # Enable + set Administrator password
-          $adminUser = [adsi]"WinNT://./Administrator,user"
-          $adminUser.SetPassword("12345")
-          $adminUser.psbase.InvokeSet("AccountDisabled", $false)
-          $adminUser.SetInfo()
-          Write-Host "✅ Administrator enabled with password: 12345"
+          # Write the setup script
+          $script = @'
+net user Administrator 12345 /active:yes 2>nul
+net user RDP 12345 /add 2>nul
+net localgroup Administrators "RDP" /add 2>nul
+net localgroup "Remote Desktop Users" "RDP" /add 2>nul
+net localgroup "Remote Desktop Users" "Administrator" /add 2>nul
+'@
+          $scriptPath = "$env:TEMP\setup_users.cmd"
+          $script | Set-Content $scriptPath -Encoding ASCII
 
-          # Add Administrator to Remote Desktop Users
-          try {
-            Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Administrator" -ErrorAction SilentlyContinue
-          } catch {}
+          # First disable password complexity via security policy
+          $secCfg = @"
+[Unicode]
+Unicode=yes
+[Version]
+signature="`$CHICAGO`$"
+Revision=1
+[System Access]
+MinimumPasswordAge = 0
+MaximumPasswordAge = -1
+MinimumPasswordLength = 0
+PasswordComplexity = 0
+PasswordHistorySize = 0
+LockoutBadCount = 0
+EnableAdminAccount = 1
+EnableGuestAccount = 0
+"@
+          $cfgPath = "$env:TEMP\secpol.cfg"
+          $secCfg | Set-Content -Path $cfgPath -Encoding Unicode
+          secedit /configure /db "$env:TEMP\secedit.sdb" /cfg $cfgPath /areas SECURITYPOLICY /quiet 2>$null
+          Write-Host "Security policy updated"
 
-          # Create RDP user via ADSI (bypasses password policy)
-          $computer = [adsi]"WinNT://.,computer"
-          try {
-            $newUser = $computer.Create("user", "RDP")
-            $newUser.SetPassword("12345")
-            $newUser.psbase.InvokeSet("UserFlags", 64)  # ADS_UF_DONT_EXPIRE_PASSWD
-            $newUser.SetInfo()
-            Write-Host "✅ RDP user created with password: 12345"
-          } catch {
-            Write-Host "RDP user may already exist, updating password..."
-            $existingUser = [adsi]"WinNT://./RDP,user"
-            $existingUser.SetPassword("12345")
-            $existingUser.SetInfo()
-          }
+          # Run the user setup as SYSTEM via scheduled task (bypasses all password restrictions)
+          $action   = New-ScheduledTaskAction  -Execute 'cmd.exe' -Argument "/c `"$scriptPath`""
+          $trigger  = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddSeconds(3))
+          $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+          $principal= New-ScheduledTaskPrincipal  -UserId 'NT AUTHORITY\SYSTEM' -RunLevel Highest
 
-          # Add RDP user to groups
-          Add-LocalGroupMember -Group "Administrators"       -Member "RDP" -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
+          Register-ScheduledTask -TaskName 'RDPSetup' -Action $action -Trigger $trigger `
+            -Settings $settings -Principal $principal -Force | Out-Null
 
+          Start-ScheduledTask -TaskName 'RDPSetup'
+          Write-Host "Waiting for task to complete..."
+          Start-Sleep -Seconds 20
+
+          # Verify
+          $rdpUser  = Get-LocalUser -Name "RDP"          -ErrorAction SilentlyContinue
+          $adminOn  = (Get-LocalUser -Name "Administrator").Enabled
+          Write-Host "Administrator enabled: $adminOn"
+          Write-Host "RDP user exists: $($null -ne $rdpUser)"
+
+          Unregister-ScheduledTask -TaskName 'RDPSetup' -Confirm:$false -ErrorAction SilentlyContinue
           Write-Host "✅ Users ready: RDP + Administrator  |  Password: 12345"
 
       - name: "🎮 Install Virtual GPU (Mesa3D OpenGL)"
