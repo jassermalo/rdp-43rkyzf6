@@ -13,25 +13,16 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          # High Performance power plan
           powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
           powercfg /h off
-
-          # Disable visual effects
           $regPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects'
           if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
           Set-ItemProperty -Path $regPath -Name 'VisualFXSetting' -Value 2
-
-          # Timer resolution
           bcdedit /set useplatformtick yes 2>$null
           bcdedit /set disabledynamictick yes 2>$null
-
-          # Network & system responsiveness
           $pp = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
           Set-ItemProperty -Path $pp -Name 'NetworkThrottlingIndex' -Value 0xffffffff
           Set-ItemProperty -Path $pp -Name 'SystemResponsiveness'   -Value 0
-
-          # Games priority profile
           $gp = "$pp\Tasks\Games"
           if (!(Test-Path $gp)) { New-Item -Path $gp -Force | Out-Null }
           Set-ItemProperty -Path $gp -Name 'GPU Priority'        -Value 8
@@ -41,8 +32,6 @@ jobs:
           Set-ItemProperty -Path $gp -Name 'Clock Rate'          -Value 10000
           Set-ItemProperty -Path $gp -Name 'Affinity'            -Value 0
           Set-ItemProperty -Path $gp -Name 'Background Only'     -Value 'False'
-
-          # Disable unnecessary services
           $services = @('WSearch','SysMain','DiagTrack','dmwappushservice','MapsBroker',
                         'XboxGipSvc','XblAuthManager','XblGameSave','XboxNetApiSvc','Fax','PrintNotify')
           foreach ($svc in $services) {
@@ -51,37 +40,22 @@ jobs:
               Set-Service  -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
             } catch {}
           }
-
-          # Disable Defender real-time
           Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
-
-          # Page file via CIM (works on modern Windows without wmic)
           try {
             $cs = Get-CimInstance -ClassName Win32_ComputerSystem
             Set-CimInstance -InputObject $cs -Property @{ AutomaticManagedPagefile = $false }
             $pf = Get-CimInstance -ClassName Win32_PageFileSetting -ErrorAction SilentlyContinue
-            if ($pf) {
-              Set-CimInstance -InputObject $pf -Property @{ InitialSize = 4096; MaximumSize = 8192 }
-            }
-          } catch {
-            Write-Host "Page file tweak skipped: $_"
-          }
-
-          # Foreground app priority
-          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' `
-            -Name 'Win32PrioritySeparation' -Value 38
-
-          Write-Host "✅ Windows optimized for performance"
+            if ($pf) { Set-CimInstance -InputObject $pf -Property @{ InitialSize = 4096; MaximumSize = 8192 } }
+          } catch { Write-Host "Page file tweak skipped: $_" }
+          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name 'Win32PrioritySeparation' -Value 38
+          Write-Host "✅ Windows optimized"
 
       - name: "🖥️ Configure RDP"
         shell: pwsh
         run: |
-          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name fDenyTSConnections -Value 0 -Force
-          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name UserAuthentication -Value 0 -Force
-          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name SecurityLayer -Value 0 -Force
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -Force
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 0 -Force
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name SecurityLayer -Value 0 -Force
           netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
@@ -90,22 +64,32 @@ jobs:
       - name: "👤 Create User Accounts"
         shell: pwsh
         run: |
+          # Disable password complexity requirement first
+          $tmpCfg = "$env:TEMP\secpol.cfg"
+          secedit /export /cfg $tmpCfg /quiet
+          (Get-Content $tmpCfg) -replace 'PasswordComplexity = 1','PasswordComplexity = 0' |
+            Set-Content $tmpCfg
+          secedit /configure /db "$env:TEMP\secedit.sdb" /cfg $tmpCfg /quiet
+          net accounts /minpwlen:0
+
+          # Enable Administrator with simple password
           net user Administrator 12345 /active:yes
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Administrator" -ErrorAction SilentlyContinue
+
+          # Create RDP user
           $pass = ConvertTo-SecureString "12345" -AsPlainText -Force
           New-LocalUser -Name "RDP" -Password $pass -AccountNeverExpires -FullName "RDP User" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators"       -Member "RDP" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
+
           Write-Host "✅ Users: RDP + Administrator  |  Password: 12345"
 
       - name: "🎮 Install Virtual GPU (Mesa3D OpenGL)"
         continue-on-error: true
         shell: pwsh
         run: |
-          $mesaUrl = "https://github.com/pal1000/mesa-dist-win/releases/download/24.3.4/mesa3d-24.3.4-release-mingw.7z"
-          $mesa7z  = "$env:TEMP\mesa3d.7z"
-          Write-Host "Downloading Mesa3D..."
-          Invoke-WebRequest -Uri $mesaUrl -OutFile $mesa7z -UseBasicParsing
+          $mesa7z = "$env:TEMP\mesa3d.7z"
+          Invoke-WebRequest -Uri "https://github.com/pal1000/mesa-dist-win/releases/download/24.3.4/mesa3d-24.3.4-release-mingw.7z" -OutFile $mesa7z -UseBasicParsing
           $mesaDir = "$env:TEMP\mesa3d"
           & "C:\Program Files\7-Zip\7z.exe" x $mesa7z -o"$mesaDir" -y | Out-Null
           $deploy = Get-ChildItem -Path $mesaDir -Filter "systemwidedeploy.cmd" -Recurse | Select-Object -First 1
@@ -146,7 +130,6 @@ jobs:
           Invoke-WebRequest -Uri "https://launcher.mojang.com/download/MinecraftInstaller.msi" -OutFile $dest -UseBasicParsing
           Start-Process msiexec.exe -ArgumentList "/i `"$dest`" /quiet /norestart" -Wait
           Remove-Item $dest -Force -ErrorAction SilentlyContinue
-
           $mcDir = "$env:APPDATA\.minecraft"
           if (!(Test-Path $mcDir)) { New-Item -ItemType Directory -Path $mcDir -Force | Out-Null }
           @{
