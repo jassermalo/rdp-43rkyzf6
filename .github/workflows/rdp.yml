@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 3600
     steps:
 
-      - name: "⚡ Windows Performance Optimization"
+      - name: Performance Optimization
         continue-on-error: true
         shell: pwsh
         run: |
@@ -22,7 +22,7 @@ jobs:
           bcdedit /set disabledynamictick yes 2>$null
           $pp = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
           Set-ItemProperty -Path $pp -Name 'NetworkThrottlingIndex' -Value 0xffffffff
-          Set-ItemProperty -Path $pp -Name 'SystemResponsiveness'   -Value 0
+          Set-ItemProperty -Path $pp -Name 'SystemResponsiveness' -Value 0
           $gp = "$pp\Tasks\Games"
           if (!(Test-Path $gp)) { New-Item -Path $gp -Force | Out-Null }
           Set-ItemProperty -Path $gp -Name 'GPU Priority' -Value 8
@@ -48,9 +48,9 @@ jobs:
             if ($pf) { Set-CimInstance -InputObject $pf -Property @{ InitialSize = 4096; MaximumSize = 8192 } }
           } catch { Write-Host "Page file tweak skipped" }
           Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name 'Win32PrioritySeparation' -Value 38
-          Write-Host "✅ Windows optimized"
+          Write-Host "Windows optimized"
 
-      - name: "🖥️ Configure RDP"
+      - name: Configure RDP
         shell: pwsh
         run: |
           Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -Force
@@ -59,67 +59,29 @@ jobs:
           netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
-          Write-Host "✅ RDP configured"
+          Write-Host "RDP configured"
 
-      - name: "👤 Create User Accounts via SYSTEM Task"
+      - name: Create Users via SYSTEM Task
         shell: pwsh
         run: |
-          # Write the setup script
-          $script = @'
-net user Administrator 12345 /active:yes 2>nul
-net user RDP 12345 /add 2>nul
-net localgroup Administrators "RDP" /add 2>nul
-net localgroup "Remote Desktop Users" "RDP" /add 2>nul
-net localgroup "Remote Desktop Users" "Administrator" /add 2>nul
-'@
+          $script = "net user Administrator 12345 /active:yes & net user RDP 12345 /add & net localgroup Administrators RDP /add & net localgroup ""Remote Desktop Users"" RDP /add & net localgroup ""Remote Desktop Users"" Administrator /add"
           $scriptPath = "$env:TEMP\setup_users.cmd"
           $script | Set-Content $scriptPath -Encoding ASCII
-
-          # First disable password complexity via security policy
-          $secCfg = @"
-[Unicode]
-Unicode=yes
-[Version]
-signature="`$CHICAGO`$"
-Revision=1
-[System Access]
-MinimumPasswordAge = 0
-MaximumPasswordAge = -1
-MinimumPasswordLength = 0
-PasswordComplexity = 0
-PasswordHistorySize = 0
-LockoutBadCount = 0
-EnableAdminAccount = 1
-EnableGuestAccount = 0
-"@
+          $secCfg = "[Unicode]`r`nUnicode=yes`r`n[Version]`r`nsignature=""`$CHICAGO`$""`r`nRevision=1`r`n[System Access]`r`nMinimumPasswordAge = 0`r`nMaximumPasswordAge = -1`r`nMinimumPasswordLength = 0`r`nPasswordComplexity = 0`r`nPasswordHistorySize = 0`r`nLockoutBadCount = 0`r`nEnableAdminAccount = 1`r`nEnableGuestAccount = 0"
           $cfgPath = "$env:TEMP\secpol.cfg"
-          $secCfg | Set-Content -Path $cfgPath -Encoding Unicode
+          [System.IO.File]::WriteAllText($cfgPath, $secCfg, [System.Text.Encoding]::Unicode)
           secedit /configure /db "$env:TEMP\secedit.sdb" /cfg $cfgPath /areas SECURITYPOLICY /quiet 2>$null
-          Write-Host "Security policy updated"
-
-          # Run the user setup as SYSTEM via scheduled task (bypasses all password restrictions)
-          $action   = New-ScheduledTaskAction  -Execute 'cmd.exe' -Argument "/c `"$scriptPath`""
-          $trigger  = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddSeconds(3))
+          $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c `"$scriptPath`""
+          $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddSeconds(3))
           $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
-          $principal= New-ScheduledTaskPrincipal  -UserId 'NT AUTHORITY\SYSTEM' -RunLevel Highest
-
-          Register-ScheduledTask -TaskName 'RDPSetup' -Action $action -Trigger $trigger `
-            -Settings $settings -Principal $principal -Force | Out-Null
-
+          $principal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -RunLevel Highest
+          Register-ScheduledTask -TaskName 'RDPSetup' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
           Start-ScheduledTask -TaskName 'RDPSetup'
-          Write-Host "Waiting for task to complete..."
           Start-Sleep -Seconds 20
-
-          # Verify
-          $rdpUser  = Get-LocalUser -Name "RDP"          -ErrorAction SilentlyContinue
-          $adminOn  = (Get-LocalUser -Name "Administrator").Enabled
-          Write-Host "Administrator enabled: $adminOn"
-          Write-Host "RDP user exists: $($null -ne $rdpUser)"
-
           Unregister-ScheduledTask -TaskName 'RDPSetup' -Confirm:$false -ErrorAction SilentlyContinue
-          Write-Host "✅ Users ready: RDP + Administrator  |  Password: 12345"
+          Write-Host "Users ready - RDP + Administrator - Password: 12345"
 
-      - name: "🎮 Install Virtual GPU (Mesa3D OpenGL)"
+      - name: Install Virtual GPU Mesa3D
         continue-on-error: true
         shell: pwsh
         run: |
@@ -136,29 +98,29 @@ EnableGuestAccount = 0
             }
           }
           Remove-Item $mesa7z -Force -ErrorAction SilentlyContinue
-          Write-Host "✅ Mesa3D (Virtual GPU / OpenGL) installed"
+          Write-Host "Mesa3D Virtual GPU installed"
 
-      - name: "📦 Install Chocolatey"
+      - name: Install Chocolatey
         shell: pwsh
         run: |
           Set-ExecutionPolicy Bypass -Scope Process -Force
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           Invoke-Expression ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-          Write-Host "✅ Chocolatey installed"
+          Write-Host "Chocolatey installed"
 
-      - name: "🦁 Install Brave Browser"
+      - name: Install Brave Browser
         shell: pwsh
         run: |
           choco install brave -y --no-progress
-          Write-Host "✅ Brave installed"
+          Write-Host "Brave installed"
 
-      - name: "☕ Install Java 17"
+      - name: Install Java 17
         shell: pwsh
         run: |
           choco install temurin17 -y --no-progress
-          Write-Host "✅ Java 17 installed"
+          Write-Host "Java 17 installed"
 
-      - name: "⛏️ Install Minecraft Launcher (v1.0)"
+      - name: Install Minecraft Launcher
         shell: pwsh
         run: |
           $dest = "$env:TEMP\MinecraftInstaller.msi"
@@ -170,18 +132,18 @@ EnableGuestAccount = 0
           @{
             profiles = @{
               v1 = @{
-                name          = "Minecraft 1.0"
-                type          = "custom"
+                name = "Minecraft 1.0"
+                type = "custom"
                 lastVersionId = "1.0"
-                javaArgs      = "-Xmx2G -Xms512m -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200"
+                javaArgs = "-Xmx2G -Xms512m -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200"
               }
             }
             settings = @{ enableHistorical = $true; enableAdvanced = $true; showGameLog = $false }
             selectedUser = @{}
           } | ConvertTo-Json -Depth 10 | Set-Content "$mcDir\launcher_profiles.json" -Encoding UTF8
-          Write-Host "✅ Minecraft installed (v1.0 profile configured)"
+          Write-Host "Minecraft installed with v1.0 profile"
 
-      - name: "🔗 Shortcuts and Auto-Launch"
+      - name: Create Shortcuts
         continue-on-error: true
         shell: pwsh
         run: |
@@ -191,8 +153,7 @@ EnableGuestAccount = 0
             "$env:LOCALAPPDATA\Programs\Minecraft Launcher\MinecraftLauncher.exe"
           ) | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (!$launcher) {
-            $launcher = Get-ChildItem 'C:\Program Files*' -Filter 'MinecraftLauncher.exe' `
-              -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+            $launcher = Get-ChildItem 'C:\Program Files*' -Filter 'MinecraftLauncher.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
           }
           if ($launcher) {
             $sc = $shell.CreateShortcut("C:\Users\Public\Desktop\Minecraft.lnk")
@@ -201,31 +162,28 @@ EnableGuestAccount = 0
             if (!(Test-Path $su)) { New-Item -ItemType Directory -Path $su -Force | Out-Null }
             $ms = $shell.CreateShortcut("$su\Minecraft.lnk")
             $ms.TargetPath = $launcher; $ms.Save()
-            Write-Host "✅ Minecraft shortcut + auto-launch on login"
+            Write-Host "Minecraft shortcut and auto-launch created"
           }
-          $brave = Get-ChildItem 'C:\Program Files*' -Filter 'brave.exe' `
-            -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          $brave = Get-ChildItem 'C:\Program Files*' -Filter 'brave.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
           if ($brave) {
             $bc = $shell.CreateShortcut("C:\Users\Public\Desktop\Brave.lnk")
             $bc.TargetPath = $brave; $bc.Save()
-            Write-Host "✅ Brave shortcut created"
+            Write-Host "Brave shortcut created"
           }
 
-      - name: "🌐 Install Tailscale"
+      - name: Install Tailscale
         shell: pwsh
         run: |
           $dest = "$env:TEMP\tailscale.msi"
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile $dest -UseBasicParsing
           Start-Process msiexec.exe -ArgumentList "/i `"$dest`" /quiet /norestart" -Wait
           Remove-Item $dest -Force
-          Write-Host "✅ Tailscale installed"
+          Write-Host "Tailscale installed"
 
-      - name: "🔒 Connect Tailscale"
+      - name: Connect Tailscale
         shell: pwsh
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
-            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
-            --hostname=gh-rdp-$env:GITHUB_RUN_ID
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp-$env:GITHUB_RUN_ID
           $tsIP = $null; $retries = 0
           while (-not $tsIP -and $retries -lt 15) {
             Start-Sleep -Seconds 4
@@ -234,34 +192,34 @@ EnableGuestAccount = 0
           }
           if (-not $tsIP) { Write-Error "Tailscale IP not assigned"; exit 1 }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          Write-Host "✅ Tailscale IP: $tsIP"
+          Write-Host "Tailscale IP: $tsIP"
 
-      - name: "✅ Verify RDP"
+      - name: Verify RDP
         shell: pwsh
         run: |
           $r = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $r.TcpTestSucceeded) { Write-Error "RDP port 3389 not reachable!"; exit 1 }
-          Write-Host "✅ RDP is accessible"
+          if (-not $r.TcpTestSucceeded) { Write-Error "RDP port 3389 not reachable"; exit 1 }
+          Write-Host "RDP is accessible"
 
-      - name: "📡 Maintain Connection"
+      - name: Maintain Connection
         shell: pwsh
         run: |
           Write-Host ""
-          Write-Host "╔══════════════════════════════════════╗"
-          Write-Host "║        ✅ RDP READY TO USE            ║"
-          Write-Host "╠══════════════════════════════════════╣"
-          Write-Host "║  Address    : $env:TAILSCALE_IP"
-          Write-Host "║                                      ║"
-          Write-Host "║  Username 1 : RDP                    ║"
-          Write-Host "║  Username 2 : Administrator          ║"
-          Write-Host "║  Password   : 12345                  ║"
-          Write-Host "╠══════════════════════════════════════╣"
-          Write-Host "║  🦁 Brave Browser   ✅                ║"
-          Write-Host "║  ⛏️  Minecraft 1.0   ✅                ║"
-          Write-Host "║  🎮 Virtual GPU     ✅                ║"
-          Write-Host "║  ☕ Java 17         ✅                ║"
-          Write-Host "╚══════════════════════════════════════╝"
+          Write-Host "==============================="
+          Write-Host "       RDP READY TO USE"
+          Write-Host "==============================="
+          Write-Host "Address    : $env:TAILSCALE_IP"
+          Write-Host ""
+          Write-Host "Username 1 : RDP"
+          Write-Host "Username 2 : Administrator"
+          Write-Host "Password   : 12345"
+          Write-Host "==============================="
+          Write-Host "Brave Browser  : Installed"
+          Write-Host "Minecraft 1.0  : Installed"
+          Write-Host "Virtual GPU    : Installed"
+          Write-Host "Java 17        : Installed"
+          Write-Host "==============================="
           while ($true) {
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] RDP Active"
+            Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] RDP Active"
             Start-Sleep -Seconds 300
           }
