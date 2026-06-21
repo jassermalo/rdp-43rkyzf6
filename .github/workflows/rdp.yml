@@ -148,27 +148,40 @@ jobs:
         shell: pwsh
         run: |
           $shell = New-Object -ComObject WScript.Shell
-          $launcher = @(
+
+          # Fixed known paths — NO recursive search
+          $mcPaths = @(
             "C:\Program Files (x86)\Minecraft Launcher\MinecraftLauncher.exe",
+            "C:\Program Files\Minecraft Launcher\MinecraftLauncher.exe",
             "$env:LOCALAPPDATA\Programs\Minecraft Launcher\MinecraftLauncher.exe"
-          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (!$launcher) {
-            $launcher = Get-ChildItem 'C:\Program Files*' -Filter 'MinecraftLauncher.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-          }
+          )
+          $launcher = $mcPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+
           if ($launcher) {
             $sc = $shell.CreateShortcut("C:\Users\Public\Desktop\Minecraft.lnk")
             $sc.TargetPath = $launcher; $sc.Save()
+
             $su = "C:\Users\RDP\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
             if (!(Test-Path $su)) { New-Item -ItemType Directory -Path $su -Force | Out-Null }
             $ms = $shell.CreateShortcut("$su\Minecraft.lnk")
             $ms.TargetPath = $launcher; $ms.Save()
-            Write-Host "Minecraft shortcut and auto-launch created"
+            Write-Host "Minecraft shortcut created at: $launcher"
+          } else {
+            Write-Host "Minecraft launcher not found at known paths — skipping shortcut"
           }
-          $brave = Get-ChildItem 'C:\Program Files*' -Filter 'brave.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+
+          $bravePaths = @(
+            "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+            "C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe"
+          )
+          $brave = $bravePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+
           if ($brave) {
             $bc = $shell.CreateShortcut("C:\Users\Public\Desktop\Brave.lnk")
             $bc.TargetPath = $brave; $bc.Save()
             Write-Host "Brave shortcut created"
+          } else {
+            Write-Host "Brave not found at known paths — skipping shortcut"
           }
 
       - name: Install Tailscale
