@@ -10,6 +10,7 @@ jobs:
     steps:
 
       - name: "⚡ Windows Performance Optimization"
+        continue-on-error: true
         shell: pwsh
         run: |
           # High Performance power plan
@@ -22,54 +23,66 @@ jobs:
           Set-ItemProperty -Path $regPath -Name 'VisualFXSetting' -Value 2
 
           # Timer resolution
-          bcdedit /set useplatformtick yes | Out-Null
-          bcdedit /set disabledynamictick yes | Out-Null
+          bcdedit /set useplatformtick yes 2>$null
+          bcdedit /set disabledynamictick yes 2>$null
 
           # Network & system responsiveness
-          $profilePath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
-          Set-ItemProperty -Path $profilePath -Name 'NetworkThrottlingIndex' -Value 0xffffffff
-          Set-ItemProperty -Path $profilePath -Name 'SystemResponsiveness' -Value 0
+          $pp = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
+          Set-ItemProperty -Path $pp -Name 'NetworkThrottlingIndex' -Value 0xffffffff
+          Set-ItemProperty -Path $pp -Name 'SystemResponsiveness'   -Value 0
 
-          # Games profile
-          $gamePath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games'
-          if (!(Test-Path $gamePath)) { New-Item -Path $gamePath -Force | Out-Null }
-          Set-ItemProperty -Path $gamePath -Name 'GPU Priority'         -Value 8
-          Set-ItemProperty -Path $gamePath -Name 'Priority'             -Value 6
-          Set-ItemProperty -Path $gamePath -Name 'Scheduling Category'  -Value 'High'
-          Set-ItemProperty -Path $gamePath -Name 'SFIO Priority'        -Value 'High'
-          Set-ItemProperty -Path $gamePath -Name 'Clock Rate'           -Value 10000
-          Set-ItemProperty -Path $gamePath -Name 'Affinity'             -Value 0
-          Set-ItemProperty -Path $gamePath -Name 'Background Only'      -Value 'False'
+          # Games priority profile
+          $gp = "$pp\Tasks\Games"
+          if (!(Test-Path $gp)) { New-Item -Path $gp -Force | Out-Null }
+          Set-ItemProperty -Path $gp -Name 'GPU Priority'        -Value 8
+          Set-ItemProperty -Path $gp -Name 'Priority'            -Value 6
+          Set-ItemProperty -Path $gp -Name 'Scheduling Category' -Value 'High'
+          Set-ItemProperty -Path $gp -Name 'SFIO Priority'       -Value 'High'
+          Set-ItemProperty -Path $gp -Name 'Clock Rate'          -Value 10000
+          Set-ItemProperty -Path $gp -Name 'Affinity'            -Value 0
+          Set-ItemProperty -Path $gp -Name 'Background Only'     -Value 'False'
 
           # Disable unnecessary services
           $services = @('WSearch','SysMain','DiagTrack','dmwappushservice','MapsBroker',
                         'XboxGipSvc','XblAuthManager','XblGameSave','XboxNetApiSvc','Fax','PrintNotify')
           foreach ($svc in $services) {
             try {
-              Stop-Service  -Name $svc -Force        -ErrorAction SilentlyContinue
-              Set-Service   -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
+              Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
+              Set-Service  -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
             } catch {}
           }
 
           # Disable Defender real-time
           Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
 
-          # Page file via wmic (works in PowerShell 7)
-          wmic computersystem set AutomaticManagedPagefile=False | Out-Null
-          wmic pagefileset set InitialSize=4096,MaximumSize=8192 | Out-Null
+          # Page file via CIM (works on modern Windows without wmic)
+          try {
+            $cs = Get-CimInstance -ClassName Win32_ComputerSystem
+            Set-CimInstance -InputObject $cs -Property @{ AutomaticManagedPagefile = $false }
+            $pf = Get-CimInstance -ClassName Win32_PageFileSetting -ErrorAction SilentlyContinue
+            if ($pf) {
+              Set-CimInstance -InputObject $pf -Property @{ InitialSize = 4096; MaximumSize = 8192 }
+            }
+          } catch {
+            Write-Host "Page file tweak skipped: $_"
+          }
 
           # Foreground app priority
-          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name 'Win32PrioritySeparation' -Value 38
+          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' `
+            -Name 'Win32PrioritySeparation' -Value 38
 
-          Write-Host "✅ Windows optimized"
+          Write-Host "✅ Windows optimized for performance"
 
       - name: "🖥️ Configure RDP"
         shell: pwsh
         run: |
-          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -Force
-          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 0 -Force
-          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name SecurityLayer       -Value 0 -Force
-          netsh advfirewall firewall delete rule name="RDP-Tailscale" | Out-Null
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name fDenyTSConnections -Value 0 -Force
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name UserAuthentication -Value 0 -Force
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name SecurityLayer -Value 0 -Force
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
           Write-Host "✅ RDP configured"
@@ -83,9 +96,10 @@ jobs:
           New-LocalUser -Name "RDP" -Password $pass -AccountNeverExpires -FullName "RDP User" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators"       -Member "RDP" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
-          Write-Host "✅ Users created (RDP + Administrator | password: 12345)"
+          Write-Host "✅ Users: RDP + Administrator  |  Password: 12345"
 
-      - name: "🎮 Install Virtual GPU (Mesa3D)"
+      - name: "🎮 Install Virtual GPU (Mesa3D OpenGL)"
+        continue-on-error: true
         shell: pwsh
         run: |
           $mesaUrl = "https://github.com/pal1000/mesa-dist-win/releases/download/24.3.4/mesa3d-24.3.4-release-mingw.7z"
@@ -97,15 +111,13 @@ jobs:
           $deploy = Get-ChildItem -Path $mesaDir -Filter "systemwidedeploy.cmd" -Recurse | Select-Object -First 1
           if ($deploy) {
             & cmd /c "`"$($deploy.FullName)`" 1"
-            Write-Host "✅ Mesa3D (Virtual GPU / OpenGL) installed"
           } else {
-            # Fallback: copy DLLs manually
             Get-ChildItem -Path $mesaDir -Filter "opengl32.dll" -Recurse | ForEach-Object {
               Copy-Item $_.FullName "C:\Windows\System32\" -Force -ErrorAction SilentlyContinue
             }
-            Write-Host "✅ Mesa3D DLLs copied manually"
           }
           Remove-Item $mesa7z -Force -ErrorAction SilentlyContinue
+          Write-Host "✅ Mesa3D (Virtual GPU) installed"
 
       - name: "📦 Install Chocolatey"
         shell: pwsh
@@ -119,7 +131,7 @@ jobs:
         shell: pwsh
         run: |
           choco install brave -y --no-progress
-          Write-Host "✅ Brave Browser installed"
+          Write-Host "✅ Brave installed"
 
       - name: "☕ Install Java 17"
         shell: pwsh
@@ -130,59 +142,51 @@ jobs:
       - name: "⛏️ Install Minecraft Launcher (v1.0)"
         shell: pwsh
         run: |
-          $url  = "https://launcher.mojang.com/download/MinecraftInstaller.msi"
           $dest = "$env:TEMP\MinecraftInstaller.msi"
-          Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+          Invoke-WebRequest -Uri "https://launcher.mojang.com/download/MinecraftInstaller.msi" -OutFile $dest -UseBasicParsing
           Start-Process msiexec.exe -ArgumentList "/i `"$dest`" /quiet /norestart" -Wait
           Remove-Item $dest -Force -ErrorAction SilentlyContinue
 
-          # Configure profile for version 1.0
           $mcDir = "$env:APPDATA\.minecraft"
           if (!(Test-Path $mcDir)) { New-Item -ItemType Directory -Path $mcDir -Force | Out-Null }
-          $profiles = @{
+          @{
             profiles = @{
-              "v1" = @{
+              v1 = @{
                 name          = "Minecraft 1.0"
                 type          = "custom"
                 lastVersionId = "1.0"
-                javaArgs      = "-Xmx2G -Xms512m -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC"
+                javaArgs      = "-Xmx2G -Xms512m -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200"
               }
             }
-            settings = @{ enableHistorical = $true; enableAdvanced = $true; showGameLog = $false }
+            settings     = @{ enableHistorical = $true; enableAdvanced = $true; showGameLog = $false }
             selectedUser = @{}
-          }
-          $profiles | ConvertTo-Json -Depth 10 | Set-Content "$mcDir\launcher_profiles.json" -Encoding UTF8
-          Write-Host "✅ Minecraft installed and configured for version 1.0"
+          } | ConvertTo-Json -Depth 10 | Set-Content "$mcDir\launcher_profiles.json" -Encoding UTF8
+          Write-Host "✅ Minecraft installed (configured for v1.0)"
 
-      - name: "🔗 Desktop Shortcuts & Auto-Launch"
+      - name: "🔗 Shortcuts and Auto-Launch"
+        continue-on-error: true
         shell: pwsh
         run: |
           $shell = New-Object -ComObject WScript.Shell
-
           $launcher = @(
             "C:\Program Files (x86)\Minecraft Launcher\MinecraftLauncher.exe",
             "$env:LOCALAPPDATA\Programs\Minecraft Launcher\MinecraftLauncher.exe"
           ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-
           if (!$launcher) {
-            $launcher = Get-ChildItem 'C:\Program Files*' -Filter 'MinecraftLauncher.exe' -Recurse -ErrorAction SilentlyContinue |
-                        Select-Object -First 1 -ExpandProperty FullName
+            $launcher = Get-ChildItem 'C:\Program Files*' -Filter 'MinecraftLauncher.exe' `
+              -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
           }
-
           if ($launcher) {
             $sc = $shell.CreateShortcut("C:\Users\Public\Desktop\Minecraft.lnk")
             $sc.TargetPath = $launcher; $sc.Save()
-            $startupDir = "C:\Users\RDP\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
-            if (!(Test-Path $startupDir)) { New-Item -ItemType Directory -Path $startupDir -Force | Out-Null }
-            $ms = $shell.CreateShortcut("$startupDir\Minecraft.lnk")
+            $su = "C:\Users\RDP\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
+            if (!(Test-Path $su)) { New-Item -ItemType Directory -Path $su -Force | Out-Null }
+            $ms = $shell.CreateShortcut("$su\Minecraft.lnk")
             $ms.TargetPath = $launcher; $ms.Save()
-            Write-Host "✅ Minecraft shortcut created + auto-launch on login"
-          } else {
-            Write-Host "⚠️ Minecraft launcher not found, skipping shortcut"
+            Write-Host "✅ Minecraft shortcut + auto-launch on login"
           }
-
-          $brave = Get-ChildItem 'C:\Program Files*' -Filter 'brave.exe' -Recurse -ErrorAction SilentlyContinue |
-                   Select-Object -First 1 -ExpandProperty FullName
+          $brave = Get-ChildItem 'C:\Program Files*' -Filter 'brave.exe' `
+            -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
           if ($brave) {
             $bc = $shell.CreateShortcut("C:\Users\Public\Desktop\Brave.lnk")
             $bc.TargetPath = $brave; $bc.Save()
@@ -201,11 +205,13 @@ jobs:
       - name: "🔒 Connect Tailscale"
         shell: pwsh
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp-$env:GITHUB_RUN_ID
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=gh-rdp-$env:GITHUB_RUN_ID
           $tsIP = $null; $retries = 0
           while (-not $tsIP -and $retries -lt 15) {
             Start-Sleep -Seconds 4
-            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>$null
             $retries++
           }
           if (-not $tsIP) { Write-Error "Tailscale IP not assigned"; exit 1 }
@@ -217,7 +223,7 @@ jobs:
         run: |
           $r = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
           if (-not $r.TcpTestSucceeded) { Write-Error "RDP port 3389 not reachable!"; exit 1 }
-          Write-Host "✅ RDP accessible"
+          Write-Host "✅ RDP is accessible"
 
       - name: "📡 Maintain Connection"
         shell: pwsh
@@ -232,10 +238,10 @@ jobs:
           Write-Host "║  Username 2 : Administrator          ║"
           Write-Host "║  Password   : 12345                  ║"
           Write-Host "╠══════════════════════════════════════╣"
-          Write-Host "║  🦁 Brave Browser    ✅               ║"
-          Write-Host "║  ⛏️  Minecraft 1.0   ✅               ║"
-          Write-Host "║  🎮 Virtual GPU      ✅               ║"
-          Write-Host "║  ☕ Java 17          ✅               ║"
+          Write-Host "║  🦁 Brave Browser   ✅                ║"
+          Write-Host "║  ⛏️  Minecraft 1.0   ✅                ║"
+          Write-Host "║  🎮 Virtual GPU     ✅                ║"
+          Write-Host "║  ☕ Java 17         ✅                ║"
           Write-Host "╚══════════════════════════════════════╝"
           while ($true) {
             Write-Host "[$(Get-Date -Format 'HH:mm:ss')] RDP Active"
