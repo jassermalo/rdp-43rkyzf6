@@ -25,13 +25,13 @@ jobs:
           Set-ItemProperty -Path $pp -Name 'SystemResponsiveness'   -Value 0
           $gp = "$pp\Tasks\Games"
           if (!(Test-Path $gp)) { New-Item -Path $gp -Force | Out-Null }
-          Set-ItemProperty -Path $gp -Name 'GPU Priority'        -Value 8
-          Set-ItemProperty -Path $gp -Name 'Priority'            -Value 6
+          Set-ItemProperty -Path $gp -Name 'GPU Priority' -Value 8
+          Set-ItemProperty -Path $gp -Name 'Priority' -Value 6
           Set-ItemProperty -Path $gp -Name 'Scheduling Category' -Value 'High'
-          Set-ItemProperty -Path $gp -Name 'SFIO Priority'       -Value 'High'
-          Set-ItemProperty -Path $gp -Name 'Clock Rate'          -Value 10000
-          Set-ItemProperty -Path $gp -Name 'Affinity'            -Value 0
-          Set-ItemProperty -Path $gp -Name 'Background Only'     -Value 'False'
+          Set-ItemProperty -Path $gp -Name 'SFIO Priority' -Value 'High'
+          Set-ItemProperty -Path $gp -Name 'Clock Rate' -Value 10000
+          Set-ItemProperty -Path $gp -Name 'Affinity' -Value 0
+          Set-ItemProperty -Path $gp -Name 'Background Only' -Value 'False'
           $services = @('WSearch','SysMain','DiagTrack','dmwappushservice','MapsBroker',
                         'XboxGipSvc','XblAuthManager','XblGameSave','XboxNetApiSvc','Fax','PrintNotify')
           foreach ($svc in $services) {
@@ -46,7 +46,7 @@ jobs:
             Set-CimInstance -InputObject $cs -Property @{ AutomaticManagedPagefile = $false }
             $pf = Get-CimInstance -ClassName Win32_PageFileSetting -ErrorAction SilentlyContinue
             if ($pf) { Set-CimInstance -InputObject $pf -Property @{ InitialSize = 4096; MaximumSize = 8192 } }
-          } catch { Write-Host "Page file tweak skipped: $_" }
+          } catch { Write-Host "Page file tweak skipped" }
           Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name 'Win32PrioritySeparation' -Value 38
           Write-Host "✅ Windows optimized"
 
@@ -64,25 +64,39 @@ jobs:
       - name: "👤 Create User Accounts"
         shell: pwsh
         run: |
-          # Disable password complexity requirement first
-          $tmpCfg = "$env:TEMP\secpol.cfg"
-          secedit /export /cfg $tmpCfg /quiet
-          (Get-Content $tmpCfg) -replace 'PasswordComplexity = 1','PasswordComplexity = 0' |
-            Set-Content $tmpCfg
-          secedit /configure /db "$env:TEMP\secedit.sdb" /cfg $tmpCfg /quiet
-          net accounts /minpwlen:0
+          # Use ADSI to set passwords — bypasses all password policy restrictions
+          # Enable + set Administrator password
+          $adminUser = [adsi]"WinNT://./Administrator,user"
+          $adminUser.SetPassword("12345")
+          $adminUser.psbase.InvokeSet("AccountDisabled", $false)
+          $adminUser.SetInfo()
+          Write-Host "✅ Administrator enabled with password: 12345"
 
-          # Enable Administrator with simple password
-          net user Administrator 12345 /active:yes
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Administrator" -ErrorAction SilentlyContinue
+          # Add Administrator to Remote Desktop Users
+          try {
+            Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Administrator" -ErrorAction SilentlyContinue
+          } catch {}
 
-          # Create RDP user
-          $pass = ConvertTo-SecureString "12345" -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $pass -AccountNeverExpires -FullName "RDP User" -ErrorAction SilentlyContinue
+          # Create RDP user via ADSI (bypasses password policy)
+          $computer = [adsi]"WinNT://.,computer"
+          try {
+            $newUser = $computer.Create("user", "RDP")
+            $newUser.SetPassword("12345")
+            $newUser.psbase.InvokeSet("UserFlags", 64)  # ADS_UF_DONT_EXPIRE_PASSWD
+            $newUser.SetInfo()
+            Write-Host "✅ RDP user created with password: 12345"
+          } catch {
+            Write-Host "RDP user may already exist, updating password..."
+            $existingUser = [adsi]"WinNT://./RDP,user"
+            $existingUser.SetPassword("12345")
+            $existingUser.SetInfo()
+          }
+
+          # Add RDP user to groups
           Add-LocalGroupMember -Group "Administrators"       -Member "RDP" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
 
-          Write-Host "✅ Users: RDP + Administrator  |  Password: 12345"
+          Write-Host "✅ Users ready: RDP + Administrator  |  Password: 12345"
 
       - name: "🎮 Install Virtual GPU (Mesa3D OpenGL)"
         continue-on-error: true
@@ -101,7 +115,7 @@ jobs:
             }
           }
           Remove-Item $mesa7z -Force -ErrorAction SilentlyContinue
-          Write-Host "✅ Mesa3D (Virtual GPU) installed"
+          Write-Host "✅ Mesa3D (Virtual GPU / OpenGL) installed"
 
       - name: "📦 Install Chocolatey"
         shell: pwsh
@@ -141,10 +155,10 @@ jobs:
                 javaArgs      = "-Xmx2G -Xms512m -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200"
               }
             }
-            settings     = @{ enableHistorical = $true; enableAdvanced = $true; showGameLog = $false }
+            settings = @{ enableHistorical = $true; enableAdvanced = $true; showGameLog = $false }
             selectedUser = @{}
           } | ConvertTo-Json -Depth 10 | Set-Content "$mcDir\launcher_profiles.json" -Encoding UTF8
-          Write-Host "✅ Minecraft installed (configured for v1.0)"
+          Write-Host "✅ Minecraft installed (v1.0 profile configured)"
 
       - name: "🔗 Shortcuts and Auto-Launch"
         continue-on-error: true
