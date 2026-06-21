@@ -8,83 +8,272 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 3600
     steps:
-      - name: Configure Core RDP Settings
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                          -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                          -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                          -Name "SecurityLayer" -Value 0 -Force
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
-          Restart-Service -Name TermService -Force
 
-      - name: Enable Administrator Account
+      - name: "⚡ Windows Performance Optimization"
+        shell: pwsh
         run: |
+          # High Performance power plan
+          powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+          powercfg /h off
+
+          # Disable visual effects for maximum speed
+          $regPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects'
+          if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
+          Set-ItemProperty -Path $regPath -Name 'VisualFXSetting' -Value 2
+
+          # Timer resolution for better performance
+          bcdedit /set useplatformtick yes | Out-Null
+          bcdedit /set disabledynamictick yes | Out-Null
+
+          # Network & system responsiveness
+          $profilePath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
+          Set-ItemProperty -Path $profilePath -Name 'NetworkThrottlingIndex' -Value 0xffffffff
+          Set-ItemProperty -Path $profilePath -Name 'SystemResponsiveness' -Value 0
+
+          # Minecraft/Games profile
+          $gamePath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games'
+          if (!(Test-Path $gamePath)) { New-Item -Path $gamePath -Force | Out-Null }
+          Set-ItemProperty -Path $gamePath -Name 'Affinity' -Value 0
+          Set-ItemProperty -Path $gamePath -Name 'Background Only' -Value 'False'
+          Set-ItemProperty -Path $gamePath -Name 'Clock Rate' -Value 10000
+          Set-ItemProperty -Path $gamePath -Name 'GPU Priority' -Value 8
+          Set-ItemProperty -Path $gamePath -Name 'Priority' -Value 6
+          Set-ItemProperty -Path $gamePath -Name 'Scheduling Category' -Value 'High'
+          Set-ItemProperty -Path $gamePath -Name 'SFIO Priority' -Value 'High'
+
+          # Disable unnecessary services
+          $services = @('WSearch','SysMain','DiagTrack','dmwappushservice','MapsBroker',
+                        'XboxGipSvc','XblAuthManager','XblGameSave','XboxNetApiSvc',
+                        'Fax','PrintNotify','wuauserv','TabletInputService','Themes')
+          foreach ($svc in $services) {
+            try {
+              Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
+              Set-Service  -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
+            } catch {}
+          }
+
+          # Disable Windows Defender real-time (speeds up installs & game)
+          Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+
+          # Optimize page file (4–8 GB)
+          $cs = Get-WmiObject Win32_ComputerSystem -EnableAllPrivileges
+          $cs.AutomaticManagedPagefile = $false
+          $cs.Put() | Out-Null
+          $pf = Get-WmiObject -Query "SELECT * FROM Win32_PageFileSetting WHERE Name LIKE '%pagefile%'"
+          if ($pf) { $pf.InitialSize = 4096; $pf.MaximumSize = 8192; $pf.Put() | Out-Null }
+
+          # Prioritize foreground apps
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name 'Win32PrioritySeparation' -Value 38
+
+          Write-Host "✅ Windows optimized for performance"
+
+      - name: "🖥️ Configure RDP"
+        shell: pwsh
+        run: |
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -Force
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 0 -Force
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name SecurityLayer   -Value 0 -Force
+
+          # RDP performance: allow all visual features over connection
+          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'PerSessionBandwidthLimit' -Value 0
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" | Out-Null
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
+          Write-Host "✅ RDP configured"
+
+      - name: "👤 Create User Accounts"
+        shell: pwsh
+        run: |
+          # Administrator
           net user Administrator 12345 /active:yes
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Administrator" -ErrorAction SilentlyContinue
-          Write-Host "Administrator account enabled"
 
-      - name: Create RDP User Account
+          # RDP user
+          $pass = ConvertTo-SecureString "12345" -AsPlainText -Force
+          New-LocalUser -Name "RDP" -Password $pass -AccountNeverExpires -FullName "RDP User" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators"        -Member "RDP" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users"  -Member "RDP" -ErrorAction SilentlyContinue
+          Write-Host "✅ Users created: RDP / Administrator  (password: 12345)"
+
+      - name: "🎮 Install Virtual GPU (Mesa3D Software Renderer)"
+        shell: pwsh
         run: |
-          $securePass = ConvertTo-SecureString "12345" -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -FullName "RDP User"
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          Write-Host "RDP user created successfully"
+          # Mesa3D gives Minecraft OpenGL support without a real GPU
+          $mesaUrl = "https://github.com/pal1000/mesa-dist-win/releases/download/24.3.4/mesa3d-24.3.4-release-mingw.7z"
+          $mesa7z  = "$env:TEMP\mesa3d.7z"
+          Write-Host "Downloading Mesa3D..."
+          Invoke-WebRequest -Uri $mesaUrl -OutFile $mesa7z -UseBasicParsing
 
-      - name: Install Tailscale
+          $mesaDir = "$env:TEMP\mesa3d"
+          & "C:\Program Files\7-Zip\7z.exe" x $mesa7z -o"$mesaDir" -y | Out-Null
+
+          # Run system-wide deployment (installs opengl32.dll system-wide)
+          $deploy = Get-ChildItem -Path $mesaDir -Filter "systemwidedeploy.cmd" -Recurse | Select-Object -First 1
+          if ($deploy) {
+            & cmd /c "`"$($deploy.FullName)`" 1"
+            Write-Host "✅ Mesa3D (Virtual GPU / OpenGL) installed system-wide"
+          } else {
+            Write-Host "⚠️ Deploy script not found — copying DLLs manually"
+            $dlls = Get-ChildItem -Path $mesaDir -Filter "*.dll" -Recurse
+            foreach ($dll in $dlls) { Copy-Item $dll.FullName "C:\Windows\System32\" -Force -ErrorAction SilentlyContinue }
+          }
+          Remove-Item $mesa7z -Force -ErrorAction SilentlyContinue
+
+      - name: "📦 Install Chocolatey"
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Invoke-Expression ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          Write-Host "✅ Chocolatey installed"
+
+      - name: "🦁 Install Brave Browser"
+        shell: pwsh
+        run: |
+          choco install brave -y --no-progress
+          Write-Host "✅ Brave Browser installed"
+
+      - name: "☕ Install Java 17 (Required for Minecraft)"
+        shell: pwsh
+        run: |
+          choco install temurin17 -y --no-progress
+          # Refresh PATH
+          $env:PATH = [System.Environment]::GetEnvironmentVariable('PATH','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('PATH','User')
+          java -version
+          Write-Host "✅ Java 17 installed"
+
+      - name: "⛏️ Install Minecraft (First Release - v1.0)"
+        shell: pwsh
+        run: |
+          # Download official Minecraft Launcher
+          $url  = "https://launcher.mojang.com/download/MinecraftInstaller.msi"
+          $dest = "$env:TEMP\MinecraftInstaller.msi"
+          Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+          Start-Process msiexec.exe -ArgumentList "/i `"$dest`" /quiet /norestart" -Wait
+          Remove-Item $dest -Force -ErrorAction SilentlyContinue
+
+          # Create .minecraft folder and set profile for version 1.0 (first official release)
+          $mcDir = "$env:APPDATA\.minecraft"
+          if (!(Test-Path $mcDir)) { New-Item -ItemType Directory -Path $mcDir -Force | Out-Null }
+
+          $profiles = @{
+            profiles = @{
+              "FirstRelease" = @{
+                name          = "Minecraft 1.0 - First Release"
+                type          = "custom"
+                lastVersionId = "1.0"
+                javaArgs      = "-Xmx2G -Xms512m -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M -XX:G1ReservePercent=20 -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1"
+              }
+            }
+            settings = @{
+              enableSnapshots    = $false
+              enableHistorical   = $true
+              enableAdvanced     = $true
+              keepLauncherOpen   = $true
+              showGameLog        = $false
+              locale             = "en-us"
+              showMenu           = $false
+            }
+            selectedUser = @{ account = "" }
+            launcherVersion = @{ name = "2.1.0" }
+          }
+          $profiles | ConvertTo-Json -Depth 10 | Set-Content "$mcDir\launcher_profiles.json" -Encoding UTF8
+          Write-Host "✅ Minecraft installed and configured for version 1.0"
+
+      - name: "🔗 Create Desktop Shortcuts & Auto-Launch Minecraft"
+        shell: pwsh
+        run: |
+          $shell = New-Object -ComObject WScript.Shell
+
+          # Find Minecraft launcher
+          $launcher = @(
+            "C:\Program Files (x86)\Minecraft Launcher\MinecraftLauncher.exe",
+            "C:\XboxGames\Minecraft Launcher\Content\Minecraft.exe",
+            "$env:LOCALAPPDATA\Packages\Microsoft.4297127D64EC6_8wekyb3d8bbwe\LocalCache\Local\Minecraft.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (!$launcher) {
+            $launcher = Get-ChildItem 'C:\Program Files*' -Filter 'MinecraftLauncher.exe' -Recurse -ErrorAction SilentlyContinue |
+                        Select-Object -First 1 -ExpandProperty FullName
+          }
+
+          if ($launcher) {
+            # Public desktop shortcut (visible to all users)
+            $sc = $shell.CreateShortcut("C:\Users\Public\Desktop\Minecraft.lnk")
+            $sc.TargetPath = $launcher; $sc.Save()
+
+            # Brave shortcut
+            $brave = Get-ChildItem 'C:\Program Files*' -Filter 'brave.exe' -Recurse -ErrorAction SilentlyContinue |
+                     Select-Object -First 1 -ExpandProperty FullName
+            if ($brave) {
+              $bc = $shell.CreateShortcut("C:\Users\Public\Desktop\Brave.lnk")
+              $bc.TargetPath = $brave; $bc.Save()
+            }
+
+            # Auto-launch Minecraft when RDP user logs in
+            $startupDir = "C:\Users\RDP\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
+            if (!(Test-Path $startupDir)) { New-Item -ItemType Directory -Path $startupDir -Force | Out-Null }
+            $mc = $shell.CreateShortcut("$startupDir\Minecraft.lnk")
+            $mc.TargetPath = $launcher; $mc.Save()
+
+            Write-Host "✅ Shortcuts created — Minecraft auto-launches on login"
+          } else {
+            Write-Host "⚠️ Minecraft launcher path not found"
+          }
+
+      - name: "🌐 Install Tailscale"
+        shell: pwsh
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          $dest  = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $dest -UseBasicParsing
+          Start-Process msiexec.exe -ArgumentList "/i `"$dest`" /quiet /norestart" -Wait
+          Remove-Item $dest -Force
+          Write-Host "✅ Tailscale installed"
 
-      - name: Establish Tailscale Connection
+      - name: "🔒 Connect Tailscale"
+        shell: pwsh
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp-$env:GITHUB_RUN_ID
+          $tsIP = $null; $retries = 0
+          while (-not $tsIP -and $retries -lt 15) {
+            Start-Sleep -Seconds 4
             $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-            Start-Sleep -Seconds 5
             $retries++
           }
-          if (-not $tsIP) {
-            Write-Error "Tailscale IP not assigned. Exiting."
-            exit 1
-          }
+          if (-not $tsIP) { Write-Error "Tailscale IP not assigned."; exit 1 }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "✅ Tailscale IP: $tsIP"
 
-      - name: Verify RDP Accessibility
+      - name: "✅ Verify RDP Port"
+        shell: pwsh
         run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-            Write-Error "TCP connection to RDP port 3389 failed"
-            exit 1
-          }
-          Write-Host "TCP connectivity successful!"
+          $r = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if (-not $r.TcpTestSucceeded) { Write-Error "RDP port 3389 not reachable!"; exit 1 }
+          Write-Host "✅ RDP is accessible on port 3389"
 
-      - name: Maintain Connection
+      - name: "📡 Maintain Connection"
+        shell: pwsh
         run: |
-          Write-Host "`n==============================="
-          Write-Host "          RDP ACCESS INFO"
-          Write-Host "==============================="
-          Write-Host "Address  : $env:TAILSCALE_IP"
           Write-Host ""
-          Write-Host "User 1:"
-          Write-Host "  Username : RDP"
-          Write-Host "  Password : 12345"
+          Write-Host "╔══════════════════════════════════════╗"
+          Write-Host "║         ✅ RDP READY TO USE           ║"
+          Write-Host "╠══════════════════════════════════════╣"
+          Write-Host "║  Address  : $env:TAILSCALE_IP"
+          Write-Host "║                                      ║"
+          Write-Host "║  👤 User 1 : RDP            ║"
+          Write-Host "║  🔑 Pass 1 : 12345                   ║"
+          Write-Host "║                                      ║"
+          Write-Host "║  👤 User 2 : Administrator           ║"
+          Write-Host "║  🔑 Pass 2 : 12345                   ║"
+          Write-Host "╠══════════════════════════════════════╣"
+          Write-Host "║  🦁 Brave Browser  ✅                 ║"
+          Write-Host "║  ⛏️  Minecraft 1.0  ✅                 ║"
+          Write-Host "║  🎮 Virtual GPU    ✅                 ║"
+          Write-Host "║  ☕ Java 17        ✅                 ║"
+          Write-Host "╚══════════════════════════════════════╝"
           Write-Host ""
-          Write-Host "User 2:"
-          Write-Host "  Username : Administrator"
-          Write-Host "  Password : 12345"
-          Write-Host "==============================="
           while ($true) {
-            Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] RDP Active — Cancel workflow to stop"
             Start-Sleep -Seconds 300
           }
