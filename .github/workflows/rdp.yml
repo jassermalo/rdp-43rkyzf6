@@ -94,44 +94,32 @@ jobs:
           choco install brave temurin17 -y --no-progress
           Write-Host "Brave + Java 17 installed"
 
-      - name: Install Minecraft Launcher
+      - name: Install Epic Games Launcher
         shell: pwsh
         run: |
-          $dest = "$env:TEMP\MinecraftInstaller.msi"
-          Invoke-WebRequest -Uri "https://launcher.mojang.com/download/MinecraftInstaller.msi" -OutFile $dest -UseBasicParsing
+          $dest = "$env:TEMP\EpicInstaller.msi"
+          Invoke-WebRequest -Uri "https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi" -OutFile $dest -UseBasicParsing
           Start-Process msiexec.exe -ArgumentList "/i `"$dest`" /quiet /norestart" -Wait
           Remove-Item $dest -Force -ErrorAction SilentlyContinue
-          $mcDir = "$env:APPDATA\.minecraft"
-          if (!(Test-Path $mcDir)) { New-Item -ItemType Directory -Path $mcDir -Force | Out-Null }
-          @{
-            profiles = @{
-              v1 = @{
-                name = "Minecraft 1.0"
-                type = "custom"
-                lastVersionId = "1.0"
-                javaArgs = "-Xmx2G -Xms512m -XX:+UseG1GC"
-              }
-            }
-            settings = @{ enableHistorical = $true; enableAdvanced = $true }
-            selectedUser = @{}
-          } | ConvertTo-Json -Depth 10 | Set-Content "$mcDir\launcher_profiles.json" -Encoding UTF8
-          Write-Host "Minecraft installed"
+          $sc = New-Object -ComObject WScript.Shell
+          $epicPaths = @(
+            "C:\Program Files (x86)\Epic Games\Launcher\Portal\Binaries\Win32\EpicGamesLauncher.exe",
+            "C:\Program Files\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe"
+          )
+          $epic = $epicPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if ($epic) {
+            $s = $sc.CreateShortcut("C:\Users\Public\Desktop\Epic Games.lnk")
+            $s.TargetPath = $epic; $s.Save()
+            Write-Host "Epic Games Launcher installed at: $epic"
+          } else {
+            Write-Host "Epic Games Launcher installed (shortcut path not found yet)"
+          }
 
       - name: Create Shortcuts
         continue-on-error: true
         shell: pwsh
         run: |
           $shell = New-Object -ComObject WScript.Shell
-          $mcPaths = @(
-            "C:\Program Files (x86)\Minecraft Launcher\MinecraftLauncher.exe",
-            "C:\Program Files\Minecraft Launcher\MinecraftLauncher.exe",
-            "$env:LOCALAPPDATA\Programs\Minecraft Launcher\MinecraftLauncher.exe"
-          )
-          $launcher = $mcPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if ($launcher) {
-            $sc = $shell.CreateShortcut("C:\Users\Public\Desktop\Minecraft.lnk")
-            $sc.TargetPath = $launcher; $sc.Save()
-          }
           $bravePaths = @(
             "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
             "C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe"
@@ -152,7 +140,6 @@ jobs:
           Invoke-WebRequest -Uri $boreUrl -OutFile $boreZip -UseBasicParsing
           Expand-Archive -Path $boreZip -DestinationPath $boreDir -Force
           $boreExe = Get-ChildItem -Path $boreDir -Filter "bore.exe" | Select-Object -First 1
-          Write-Host "Starting bore tunnel on RDP port 3389..."
           $logFile = "$env:TEMP\bore_output.txt"
           $proc = Start-Process -FilePath $boreExe.FullName `
             -ArgumentList "local 3389 --to bore.pub" `
@@ -161,9 +148,9 @@ jobs:
             -NoNewWindow -PassThru
           Start-Sleep -Seconds 8
           $output = Get-Content $logFile -ErrorAction SilentlyContinue
+          $err    = Get-Content "$env:TEMP\bore_err.txt" -ErrorAction SilentlyContinue
           $port = ($output | Select-String -Pattern 'bore\.pub:(\d+)').Matches.Groups[1].Value
           if (-not $port) {
-            $err = Get-Content "$env:TEMP\bore_err.txt" -ErrorAction SilentlyContinue
             $port = ($err | Select-String -Pattern 'bore\.pub:(\d+)').Matches.Groups[1].Value
           }
           Write-Host ""
@@ -176,10 +163,12 @@ jobs:
           Write-Host "Username 2 : Administrator"
           Write-Host "Password   : 12345"
           Write-Host "==============================="
-          Write-Host "Brave Browser  : Installed"
-          Write-Host "Minecraft 1.0  : Installed"
-          Write-Host "Virtual GPU    : Installed"
-          Write-Host "Java 17        : Installed"
+          Write-Host "Brave Browser      : Installed"
+          Write-Host "Epic Games Launcher: Installed (login inside RDP)"
+          Write-Host "Virtual GPU        : Installed"
+          Write-Host "Java 17            : Installed"
+          Write-Host "==============================="
+          Write-Host "NOTE: Open Epic Games inside RDP, login, then download Fortnite"
           Write-Host "==============================="
           while ($true) {
             Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] RDP Active - bore.pub:$port"
