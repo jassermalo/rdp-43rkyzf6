@@ -36,28 +36,32 @@ jobs:
           Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name 'Win32PrioritySeparation' -Value 38
           Write-Host "Windows optimized"
 
-      - name: Install Arabic Language
+      - name: Set Arabic Language via Registry
         continue-on-error: true
         shell: pwsh
         run: |
-          Write-Host "Installing Arabic language pack..."
-          # Install Arabic language pack
-          Install-Language -Language ar-SA -ErrorAction SilentlyContinue
-          # Set Arabic as UI language
-          Set-WinUILanguageOverride -Language ar-SA -ErrorAction SilentlyContinue
-          # Set system locale to Arabic (Saudi Arabia)
+          Write-Host "Setting Arabic language via Registry..."
+          # Set system locale to Arabic Saudi Arabia
           Set-WinSystemLocale -SystemLocale ar-SA -ErrorAction SilentlyContinue
-          # Set user language list with Arabic first
-          $langList = New-WinUserLanguageList ar-SA
-          $langList[0].Handwriting = $true
-          Set-WinUserLanguageList $langList -Force -ErrorAction SilentlyContinue
-          # Set region to Saudi Arabia
+          # Set region to Saudi Arabia (GeoID 187)
           Set-WinHomeLocation -GeoId 187 -ErrorAction SilentlyContinue
-          # Set input method to Arabic keyboard
-          Set-WinDefaultInputMethodOverride -InputTip "0401:00000401" -ErrorAction SilentlyContinue
-          # Enable right-to-left display
-          Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name 'PreferredUILanguages' -Value 'ar-SA' -ErrorAction SilentlyContinue
-          Write-Host "Arabic language installed and set as default"
+          # Set user language list - Arabic first then English
+          $langList = New-WinUserLanguageList ar-SA
+          $langList.Add('en-US')
+          Set-WinUserLanguageList $langList -Force -ErrorAction SilentlyContinue
+          # Set UI language override to Arabic
+          Set-WinUILanguageOverride -Language ar-SA -ErrorAction SilentlyContinue
+          # Registry: set Arabic as preferred UI language for all users
+          $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\MUI\Settings'
+          if (!(Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+          Set-ItemProperty -Path $path -Name 'PreferredUILanguages' -Value @('ar-SA') -ErrorAction SilentlyContinue
+          # Set locale registry keys
+          Set-ItemProperty -Path 'HKCU:\Control Panel\International' -Name 'LocaleName' -Value 'ar-SA' -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path 'HKCU:\Control Panel\International' -Name 'sLanguage'  -Value 'ARA'   -ErrorAction SilentlyContinue
+          # Install Arabic language pack via DISM (fast, no download needed for supported langs)
+          $dismResult = dism /online /Add-Capability /CapabilityName:Language.Basic~~~ar-SA~0.0.1.0 /NoRestart 2>&1
+          Write-Host $dismResult
+          Write-Host "Arabic language configured successfully"
 
       - name: Configure RDP
         shell: pwsh
@@ -187,12 +191,10 @@ jobs:
           Write-Host "Password   : 12345"
           Write-Host "==============================="
           Write-Host "Brave Browser      : Installed"
-          Write-Host "Epic Games Launcher: Installed (login inside RDP)"
+          Write-Host "Epic Games Launcher: Installed"
           Write-Host "Virtual GPU        : Installed"
           Write-Host "Java 17            : Installed"
-          Write-Host "Arabic Language    : Installed (ar-SA)"
-          Write-Host "==============================="
-          Write-Host "NOTE: Open Epic Games inside RDP, login, then download Fortnite"
+          Write-Host "Arabic Language    : Configured (ar-SA)"
           Write-Host "==============================="
           while ($true) {
             Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] RDP Active - bore.pub:$port"
