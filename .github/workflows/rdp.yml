@@ -36,6 +36,29 @@ jobs:
           Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name 'Win32PrioritySeparation' -Value 38
           Write-Host "Windows optimized"
 
+      - name: Install Arabic Language
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Write-Host "Installing Arabic language pack..."
+          # Install Arabic language pack
+          Install-Language -Language ar-SA -ErrorAction SilentlyContinue
+          # Set Arabic as UI language
+          Set-WinUILanguageOverride -Language ar-SA -ErrorAction SilentlyContinue
+          # Set system locale to Arabic (Saudi Arabia)
+          Set-WinSystemLocale -SystemLocale ar-SA -ErrorAction SilentlyContinue
+          # Set user language list with Arabic first
+          $langList = New-WinUserLanguageList ar-SA
+          $langList[0].Handwriting = $true
+          Set-WinUserLanguageList $langList -Force -ErrorAction SilentlyContinue
+          # Set region to Saudi Arabia
+          Set-WinHomeLocation -GeoId 187 -ErrorAction SilentlyContinue
+          # Set input method to Arabic keyboard
+          Set-WinDefaultInputMethodOverride -InputTip "0401:00000401" -ErrorAction SilentlyContinue
+          # Enable right-to-left display
+          Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name 'PreferredUILanguages' -Value 'ar-SA' -ErrorAction SilentlyContinue
+          Write-Host "Arabic language installed and set as default"
+
       - name: Configure RDP
         shell: pwsh
         run: |
@@ -167,6 +190,7 @@ jobs:
           Write-Host "Epic Games Launcher: Installed (login inside RDP)"
           Write-Host "Virtual GPU        : Installed"
           Write-Host "Java 17            : Installed"
+          Write-Host "Arabic Language    : Installed (ar-SA)"
           Write-Host "==============================="
           Write-Host "NOTE: Open Epic Games inside RDP, login, then download Fortnite"
           Write-Host "==============================="
