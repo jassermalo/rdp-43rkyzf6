@@ -36,32 +36,57 @@ jobs:
           Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name 'Win32PrioritySeparation' -Value 38
           Write-Host "Windows optimized"
 
-      - name: Set Arabic Language via Registry
+      - name: Set Arabic Language
         continue-on-error: true
         shell: pwsh
         run: |
-          Write-Host "Setting Arabic language via Registry..."
-          # Set system locale to Arabic Saudi Arabia
+          Write-Host "Installing Arabic language pack..."
+          # Install Arabic language pack (most reliable method on Server 2022)
+          try {
+            Install-Language -Language ar-SA -CopyToSettings -PassThru -ErrorAction Stop
+            Write-Host "Arabic language pack installed via Install-Language"
+          } catch {
+            Write-Host "Install-Language failed, trying DISM..."
+            dism /online /Add-Capability /CapabilityName:Language.Basic~~~ar-SA~0.0.1.0 /NoRestart 2>&1
+            dism /online /Add-Capability /CapabilityName:Language.OCR~~~ar-SA~0.0.1.0 /NoRestart 2>&1
+            dism /online /Add-Capability /CapabilityName:Language.Handwriting~~~ar-SA~0.0.1.0 /NoRestart 2>&1
+            dism /online /Add-Capability /CapabilityName:Language.TextToSpeech~~~ar-SA~0.0.1.0 /NoRestart 2>&1
+            dism /online /Add-Capability /CapabilityName:Language.Speech~~~ar-SA~0.0.1.0 /NoRestart 2>&1
+          }
+
+          # Set system locale and region
           Set-WinSystemLocale -SystemLocale ar-SA -ErrorAction SilentlyContinue
-          # Set region to Saudi Arabia (GeoID 187)
           Set-WinHomeLocation -GeoId 187 -ErrorAction SilentlyContinue
-          # Set user language list - Arabic first then English
+
+          # Set Arabic as primary UI language
           $langList = New-WinUserLanguageList ar-SA
           $langList.Add('en-US')
           Set-WinUserLanguageList $langList -Force -ErrorAction SilentlyContinue
-          # Set UI language override to Arabic
           Set-WinUILanguageOverride -Language ar-SA -ErrorAction SilentlyContinue
-          # Registry: set Arabic as preferred UI language for all users
-          $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\MUI\Settings'
-          if (!(Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
-          Set-ItemProperty -Path $path -Name 'PreferredUILanguages' -Value @('ar-SA') -ErrorAction SilentlyContinue
-          # Set locale registry keys
-          Set-ItemProperty -Path 'HKCU:\Control Panel\International' -Name 'LocaleName' -Value 'ar-SA' -ErrorAction SilentlyContinue
-          Set-ItemProperty -Path 'HKCU:\Control Panel\International' -Name 'sLanguage'  -Value 'ARA'   -ErrorAction SilentlyContinue
-          # Install Arabic language pack via DISM (fast, no download needed for supported langs)
-          $dismResult = dism /online /Add-Capability /CapabilityName:Language.Basic~~~ar-SA~0.0.1.0 /NoRestart 2>&1
-          Write-Host $dismResult
-          Write-Host "Arabic language configured successfully"
+
+          # Copy Arabic settings to Welcome Screen and new users
+          Copy-UserInternationalSettingsToSystem -WelcomeScreen $True -NewUser $True -ErrorAction SilentlyContinue
+
+          # Registry: force Arabic as MUI language for all users
+          $muiPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\MUI\Settings'
+          if (!(Test-Path $muiPath)) { New-Item -Path $muiPath -Force | Out-Null }
+          Set-ItemProperty -Path $muiPath -Name 'PreferredUILanguages' -Value @('ar-SA') -Type MultiString -ErrorAction SilentlyContinue
+
+          # Apply to current user profile
+          Set-ItemProperty -Path 'HKCU:\Control Panel\International' -Name 'LocaleName'   -Value 'ar-SA' -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path 'HKCU:\Control Panel\International' -Name 'sLanguage'    -Value 'ARA'   -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path 'HKCU:\Control Panel\International' -Name 'sCountry'     -Value 'Saudi Arabia' -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path 'HKCU:\Control Panel\International' -Name 'iCountry'     -Value '966'   -ErrorAction SilentlyContinue
+
+          # Apply to DEFAULT user (affects RDP users at login)
+          $defaultHive = 'C:\Users\Default\NTUSER.DAT'
+          reg load 'HKU\DEFAULT_USER' $defaultHive 2>$null
+          reg add 'HKU\DEFAULT_USER\Control Panel\International' /v LocaleName /t REG_SZ /d ar-SA /f 2>$null
+          reg add 'HKU\DEFAULT_USER\Control Panel\International' /v sLanguage  /t REG_SZ /d ARA    /f 2>$null
+          reg add 'HKU\DEFAULT_USER\Control Panel\International' /v sCountry   /t REG_SZ /d "Saudi Arabia" /f 2>$null
+          reg unload 'HKU\DEFAULT_USER' 2>$null
+
+          Write-Host "Arabic language configured successfully (ar-SA)"
 
       - name: Configure RDP
         shell: pwsh
@@ -107,56 +132,14 @@ jobs:
           Remove-Item $mesa7z -Force -ErrorAction SilentlyContinue
           Write-Host "Mesa3D Virtual GPU installed"
 
-      - name: Install Chocolatey
+      - name: Install Chocolatey and Java
         shell: pwsh
         run: |
           Set-ExecutionPolicy Bypass -Scope Process -Force
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           Invoke-Expression ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-          Write-Host "Chocolatey installed"
-
-      - name: Install Brave and Java
-        shell: pwsh
-        run: |
-          choco install brave temurin17 -y --no-progress
-          Write-Host "Brave + Java 17 installed"
-
-      - name: Install Epic Games Launcher
-        shell: pwsh
-        run: |
-          $dest = "$env:TEMP\EpicInstaller.msi"
-          Invoke-WebRequest -Uri "https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi" -OutFile $dest -UseBasicParsing
-          Start-Process msiexec.exe -ArgumentList "/i `"$dest`" /quiet /norestart" -Wait
-          Remove-Item $dest -Force -ErrorAction SilentlyContinue
-          $sc = New-Object -ComObject WScript.Shell
-          $epicPaths = @(
-            "C:\Program Files (x86)\Epic Games\Launcher\Portal\Binaries\Win32\EpicGamesLauncher.exe",
-            "C:\Program Files\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe"
-          )
-          $epic = $epicPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if ($epic) {
-            $s = $sc.CreateShortcut("C:\Users\Public\Desktop\Epic Games.lnk")
-            $s.TargetPath = $epic; $s.Save()
-            Write-Host "Epic Games Launcher installed at: $epic"
-          } else {
-            Write-Host "Epic Games Launcher installed (shortcut path not found yet)"
-          }
-
-      - name: Create Shortcuts
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $shell = New-Object -ComObject WScript.Shell
-          $bravePaths = @(
-            "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
-            "C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe"
-          )
-          $brave = $bravePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if ($brave) {
-            $bc = $shell.CreateShortcut("C:\Users\Public\Desktop\Brave.lnk")
-            $bc.TargetPath = $brave; $bc.Save()
-          }
-          Write-Host "Shortcuts created"
+          choco install temurin17 -y --no-progress
+          Write-Host "Chocolatey + Java 17 installed"
 
       - name: Connect via bore.pub
         shell: pwsh
@@ -190,8 +173,6 @@ jobs:
           Write-Host "Username 2 : Administrator"
           Write-Host "Password   : 12345"
           Write-Host "==============================="
-          Write-Host "Brave Browser      : Installed"
-          Write-Host "Epic Games Launcher: Installed"
           Write-Host "Virtual GPU        : Installed"
           Write-Host "Java 17            : Installed"
           Write-Host "Arabic Language    : Configured (ar-SA)"
