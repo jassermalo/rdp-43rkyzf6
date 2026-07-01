@@ -40,53 +40,41 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          Write-Host "Installing Arabic language pack..."
-          # Install Arabic language pack (most reliable method on Server 2022)
-          try {
-            Install-Language -Language ar-SA -CopyToSettings -PassThru -ErrorAction Stop
-            Write-Host "Arabic language pack installed via Install-Language"
-          } catch {
-            Write-Host "Install-Language failed, trying DISM..."
-            dism /online /Add-Capability /CapabilityName:Language.Basic~~~ar-SA~0.0.1.0 /NoRestart 2>&1
-            dism /online /Add-Capability /CapabilityName:Language.OCR~~~ar-SA~0.0.1.0 /NoRestart 2>&1
-            dism /online /Add-Capability /CapabilityName:Language.Handwriting~~~ar-SA~0.0.1.0 /NoRestart 2>&1
-            dism /online /Add-Capability /CapabilityName:Language.TextToSpeech~~~ar-SA~0.0.1.0 /NoRestart 2>&1
-            dism /online /Add-Capability /CapabilityName:Language.Speech~~~ar-SA~0.0.1.0 /NoRestart 2>&1
-          }
+          Write-Host "Setting Arabic language via Registry (no download needed)..."
 
-          # Set system locale and region
+          # System locale + region
           Set-WinSystemLocale -SystemLocale ar-SA -ErrorAction SilentlyContinue
           Set-WinHomeLocation -GeoId 187 -ErrorAction SilentlyContinue
 
-          # Set Arabic as primary UI language
+          # UI language override
+          Set-WinUILanguageOverride -Language ar-SA -ErrorAction SilentlyContinue
+
+          # User language list (Arabic first)
           $langList = New-WinUserLanguageList ar-SA
           $langList.Add('en-US')
           Set-WinUserLanguageList $langList -Force -ErrorAction SilentlyContinue
-          Set-WinUILanguageOverride -Language ar-SA -ErrorAction SilentlyContinue
 
-          # Copy Arabic settings to Welcome Screen and new users
+          # Copy to Welcome Screen + new users
           Copy-UserInternationalSettingsToSystem -WelcomeScreen $True -NewUser $True -ErrorAction SilentlyContinue
 
-          # Registry: force Arabic as MUI language for all users
+          # Registry keys for current user
+          Set-ItemProperty 'HKCU:\Control Panel\International' -Name 'LocaleName' -Value 'ar-SA' -ErrorAction SilentlyContinue
+          Set-ItemProperty 'HKCU:\Control Panel\International' -Name 'sLanguage'  -Value 'ARA'   -ErrorAction SilentlyContinue
+          Set-ItemProperty 'HKCU:\Control Panel\International' -Name 'sCountry'   -Value 'Saudi Arabia' -ErrorAction SilentlyContinue
+
+          # MUI preferred language
           $muiPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\MUI\Settings'
           if (!(Test-Path $muiPath)) { New-Item -Path $muiPath -Force | Out-Null }
-          Set-ItemProperty -Path $muiPath -Name 'PreferredUILanguages' -Value @('ar-SA') -Type MultiString -ErrorAction SilentlyContinue
+          Set-ItemProperty $muiPath -Name 'PreferredUILanguages' -Value @('ar-SA') -Type MultiString -ErrorAction SilentlyContinue
 
-          # Apply to current user profile
-          Set-ItemProperty -Path 'HKCU:\Control Panel\International' -Name 'LocaleName'   -Value 'ar-SA' -ErrorAction SilentlyContinue
-          Set-ItemProperty -Path 'HKCU:\Control Panel\International' -Name 'sLanguage'    -Value 'ARA'   -ErrorAction SilentlyContinue
-          Set-ItemProperty -Path 'HKCU:\Control Panel\International' -Name 'sCountry'     -Value 'Saudi Arabia' -ErrorAction SilentlyContinue
-          Set-ItemProperty -Path 'HKCU:\Control Panel\International' -Name 'iCountry'     -Value '966'   -ErrorAction SilentlyContinue
-
-          # Apply to DEFAULT user (affects RDP users at login)
-          $defaultHive = 'C:\Users\Default\NTUSER.DAT'
-          reg load 'HKU\DEFAULT_USER' $defaultHive 2>$null
+          # Apply to Default user hive (affects RDP/Administrator at login)
+          reg load 'HKU\DEFAULT_USER' 'C:\Users\Default\NTUSER.DAT' 2>$null
           reg add 'HKU\DEFAULT_USER\Control Panel\International' /v LocaleName /t REG_SZ /d ar-SA /f 2>$null
           reg add 'HKU\DEFAULT_USER\Control Panel\International' /v sLanguage  /t REG_SZ /d ARA    /f 2>$null
           reg add 'HKU\DEFAULT_USER\Control Panel\International' /v sCountry   /t REG_SZ /d "Saudi Arabia" /f 2>$null
           reg unload 'HKU\DEFAULT_USER' 2>$null
 
-          Write-Host "Arabic language configured successfully (ar-SA)"
+          Write-Host "Arabic language configured (ar-SA) - no download required"
 
       - name: Configure RDP
         shell: pwsh
@@ -149,34 +137,54 @@ jobs:
           $boreDir = "$env:TEMP\bore"
           Invoke-WebRequest -Uri $boreUrl -OutFile $boreZip -UseBasicParsing
           Expand-Archive -Path $boreZip -DestinationPath $boreDir -Force
-          $boreExe = Get-ChildItem -Path $boreDir -Filter "bore.exe" | Select-Object -First 1
-          $logFile = "$env:TEMP\bore_output.txt"
-          $proc = Start-Process -FilePath $boreExe.FullName `
+          $boreExe = (Get-ChildItem -Path $boreDir -Filter "bore.exe" -Recurse | Select-Object -First 1).FullName
+
+          $logOut = "$env:TEMP\bore_out.txt"
+          $logErr = "$env:TEMP\bore_err.txt"
+          "" | Set-Content $logOut
+          "" | Set-Content $logErr
+
+          $proc = Start-Process -FilePath $boreExe `
             -ArgumentList "local 3389 --to bore.pub" `
-            -RedirectStandardOutput $logFile `
-            -RedirectStandardError "$env:TEMP\bore_err.txt" `
+            -RedirectStandardOutput $logOut `
+            -RedirectStandardError  $logErr `
             -NoNewWindow -PassThru
-          Start-Sleep -Seconds 8
-          $output = Get-Content $logFile -ErrorAction SilentlyContinue
-          $err    = Get-Content "$env:TEMP\bore_err.txt" -ErrorAction SilentlyContinue
-          $port = ($output | Select-String -Pattern 'bore\.pub:(\d+)').Matches.Groups[1].Value
-          if (-not $port) {
-            $port = ($err | Select-String -Pattern 'bore\.pub:(\d+)').Matches.Groups[1].Value
+
+          # Wait up to 30 seconds for bore to establish connection
+          $port = ""
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 1
+            $out = (Get-Content $logOut -ErrorAction SilentlyContinue) -join " "
+            $err = (Get-Content $logErr -ErrorAction SilentlyContinue) -join " "
+            $combined = "$out $err"
+            $match = [regex]::Match($combined, 'bore\.pub:(\d+)')
+            if ($match.Success) {
+              $port = $match.Groups[1].Value
+              break
+            }
           }
+
           Write-Host ""
           Write-Host "==============================="
           Write-Host "       RDP READY TO USE"
           Write-Host "==============================="
-          Write-Host "Address    : bore.pub:$port"
+          if ($port) {
+            Write-Host "Address    : bore.pub:$port"
+          } else {
+            Write-Host "Address    : bore.pub (port not detected - check err below)"
+            Write-Host "Bore OUT: $((Get-Content $logOut -ErrorAction SilentlyContinue) -join '; ')"
+            Write-Host "Bore ERR: $((Get-Content $logErr -ErrorAction SilentlyContinue) -join '; ')"
+          }
           Write-Host ""
           Write-Host "Username 1 : RDP"
           Write-Host "Username 2 : Administrator"
           Write-Host "Password   : 12345"
           Write-Host "==============================="
-          Write-Host "Virtual GPU        : Installed"
-          Write-Host "Java 17            : Installed"
-          Write-Host "Arabic Language    : Configured (ar-SA)"
+          Write-Host "Virtual GPU     : Installed"
+          Write-Host "Java 17         : Installed"
+          Write-Host "Arabic Language : Configured (ar-SA)"
           Write-Host "==============================="
+
           while ($true) {
             Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] RDP Active - bore.pub:$port"
             Start-Sleep -Seconds 60
