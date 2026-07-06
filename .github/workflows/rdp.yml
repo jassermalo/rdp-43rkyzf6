@@ -129,56 +129,37 @@ jobs:
           choco install temurin17 -y --no-progress
           Write-Host "Chocolatey + Java 17 installed"
 
-      - name: Connect via bore.pub
+      - name: Connect via Cloudflare Tunnel
         shell: pwsh
+        env:
+          TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         run: |
-          $boreUrl = "https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-pc-windows-msvc.zip"
-          $boreZip = "$env:TEMP\bore.zip"
-          $boreDir = "$env:TEMP\bore"
-          Invoke-WebRequest -Uri $boreUrl -OutFile $boreZip -UseBasicParsing
-          Expand-Archive -Path $boreZip -DestinationPath $boreDir -Force
-          $boreExe = (Get-ChildItem -Path $boreDir -Filter "bore.exe" -Recurse | Select-Object -First 1).FullName
+          $cfUrl = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+          $cfExe = "$env:TEMP\cloudflared.exe"
+          Invoke-WebRequest -Uri $cfUrl -OutFile $cfExe -UseBasicParsing
 
-          $logOut = "$env:TEMP\bore_out.txt"
-          $logErr = "$env:TEMP\bore_err.txt"
+          $logOut = "$env:TEMP\cloudflared_out.txt"
+          $logErr = "$env:TEMP\cloudflared_err.txt"
           "" | Set-Content $logOut
           "" | Set-Content $logErr
 
-          $proc = Start-Process -FilePath $boreExe `
-            -ArgumentList "local 3389 --to bore.pub" `
+          $proc = Start-Process -FilePath $cfExe `
+            -ArgumentList "tunnel run --token $env:TUNNEL_TOKEN" `
             -RedirectStandardOutput $logOut `
             -RedirectStandardError  $logErr `
             -NoNewWindow -PassThru
 
-          # Wait up to 30 seconds for bore to establish connection
-          $port = ""
-          for ($i = 0; $i -lt 30; $i++) {
-            Start-Sleep -Seconds 1
-            $out = (Get-Content $logOut -ErrorAction SilentlyContinue) -join " "
-            $err = (Get-Content $logErr -ErrorAction SilentlyContinue) -join " "
-            $combined = "$out $err"
-            $match = [regex]::Match($combined, 'bore\.pub:(\d+)')
-            if ($match.Success) {
-              $port = $match.Groups[1].Value
-              break
-            }
-          }
+          Start-Sleep -Seconds 10
 
           Write-Host ""
           Write-Host "==============================="
           Write-Host "       RDP READY TO USE"
           Write-Host "==============================="
-          if ($port) {
-            Write-Host "Address    : bore.pub:$port"
-          } else {
-            Write-Host "Address    : bore.pub (port not detected - check err below)"
-            Write-Host "Bore OUT: $((Get-Content $logOut -ErrorAction SilentlyContinue) -join '; ')"
-            Write-Host "Bore ERR: $((Get-Content $logErr -ErrorAction SilentlyContinue) -join '; ')"
-          }
-          Write-Host ""
-          Write-Host "Username 1 : RDP"
-          Write-Host "Username 2 : Administrator"
-          Write-Host "Password   : 12345"
+          Write-Host "Connect via the private route/hostname configured on your Cloudflare Tunnel (Networks > Tunnels)."
+          Write-Host "Target        : localhost:3389 (RDP)"
+          Write-Host "Username 1    : RDP"
+          Write-Host "Username 2    : Administrator"
+          Write-Host "Password      : 12345"
           Write-Host "==============================="
           Write-Host "Virtual GPU     : Installed"
           Write-Host "Java 17         : Installed"
@@ -186,6 +167,6 @@ jobs:
           Write-Host "==============================="
 
           while ($true) {
-            Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] RDP Active - bore.pub:$port"
+            Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] RDP Active via Cloudflare Tunnel"
             Start-Sleep -Seconds 60
           }
