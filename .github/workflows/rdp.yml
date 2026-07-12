@@ -129,44 +129,70 @@ jobs:
           choco install temurin17 -y --no-progress
           Write-Host "Chocolatey + Java 17 installed"
 
-      - name: Connect via Cloudflare Tunnel
+      - name: Download YouTube Video to Desktop
+        continue-on-error: true
         shell: pwsh
-        env:
-          TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         run: |
-          $cfUrl = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
-          $cfExe = "$env:TEMP\cloudflared.exe"
-          Invoke-WebRequest -Uri $cfUrl -OutFile $cfExe -UseBasicParsing
+          pip install yt-dlp -q
+          $url = "https://www.youtube.com/live/asgUydJW1Rg?si=IHESYTCIRwdneJkJ"
+          $desktops = @(
+            "C:\Users\Public\Desktop",
+            "C:\Users\RDP\Desktop",
+            "C:\Users\Administrator\Desktop"
+          )
+          foreach ($d in $desktops) {
+            if (!(Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+            Write-Host "Downloading to $d ..."
+            yt-dlp $url -o "$d\video.%(ext)s" --no-playlist --progress
+          }
+          Write-Host "YouTube video downloaded to Desktop"
+      - name: Connect via bore.pub
+        shell: pwsh
+        run: |
+          $releases = Invoke-RestMethod "https://api.github.com/repos/ekzhang/bore/releases/latest"
+          $asset = $releases.assets | Where-Object { $_.name -match "windows" } | Select-Object -First 1
+          $boreExe = "$env:TEMP\bore.exe"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $boreExe -UseBasicParsing
 
-          $logOut = "$env:TEMP\cloudflared_out.txt"
-          $logErr = "$env:TEMP\cloudflared_err.txt"
+          $logOut = "$env:TEMP\bore_out.txt"
           "" | Set-Content $logOut
-          "" | Set-Content $logErr
 
-          $proc = Start-Process -FilePath $cfExe `
-            -ArgumentList "tunnel run --token $env:TUNNEL_TOKEN" `
+          Start-Process -FilePath $boreExe `
+            -ArgumentList "local 3389 --to bore.pub" `
             -RedirectStandardOutput $logOut `
-            -RedirectStandardError  $logErr `
-            -NoNewWindow -PassThru
+            -NoNewWindow -PassThru | Out-Null
 
           Start-Sleep -Seconds 10
+
+          $output = Get-Content $logOut -Raw -ErrorAction SilentlyContinue
+          $match = [regex]::Match($output, 'bore\.pub:(\d+)')
 
           Write-Host ""
           Write-Host "==============================="
           Write-Host "       RDP READY TO USE"
           Write-Host "==============================="
-          Write-Host "Connect via the private route/hostname configured on your Cloudflare Tunnel (Networks > Tunnels)."
-          Write-Host "Target        : localhost:3389 (RDP)"
-          Write-Host "Username 1    : RDP"
-          Write-Host "Username 2    : Administrator"
-          Write-Host "Password      : 12345"
+          if ($match.Success) {
+            Write-Host "Address  : bore.pub:$($match.Groups[1].Value)"
+          } else {
+            Write-Host "Address  : bore.pub (see logs for port)"
+            Write-Host "Raw output: $output"
+          }
+          Write-Host "Username : RDP   (or Administrator)"
+          Write-Host "Password : 12345"
           Write-Host "==============================="
           Write-Host "Virtual GPU     : Installed"
           Write-Host "Java 17         : Installed"
           Write-Host "Arabic Language : Configured (ar-SA)"
+          Write-Host "YouTube Video   : Downloaded to Desktop"
           Write-Host "==============================="
 
           while ($true) {
-            Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] RDP Active via Cloudflare Tunnel"
+            $out = Get-Content $logOut -Raw -ErrorAction SilentlyContinue
+            $m = [regex]::Match($out, 'bore\.pub:(\d+)')
+            if ($m.Success) {
+              Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] RDP Active - bore.pub:$($m.Groups[1].Value)"
+            } else {
+              Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] RDP Active via bore.pub"
+            }
             Start-Sleep -Seconds 60
           }
