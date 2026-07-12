@@ -212,21 +212,30 @@ jobs:
         shell: pwsh
         run: |
           $releases = Invoke-RestMethod "https://api.github.com/repos/ekzhang/bore/releases/latest"
-          $asset = $releases.assets | Where-Object { $_.name -match "windows" } | Select-Object -First 1
-          $boreExe = "$env:TEMP\bore.exe"
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $boreExe -UseBasicParsing
+          $asset = $releases.assets | Where-Object { $_.name -match "windows.*x86_64|x86_64.*windows" -or $_.name -match "windows" } | Select-Object -First 1
+          Write-Host "Downloading bore asset: $($asset.name)"
+          $zipPath = "$env:TEMP\bore.zip"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -UseBasicParsing
+          $extractDir = "$env:TEMP\bore_extracted"
+          Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+          $boreExe = Get-ChildItem -Path $extractDir -Filter "bore.exe" -Recurse | Select-Object -First 1
+          if (-not $boreExe) { Write-Error "bore.exe not found after extraction"; exit 1 }
+          Write-Host "Found bore.exe at: $($boreExe.FullName)"
 
           $logOut = "$env:TEMP\bore_out.txt"
+          $logErr = "$env:TEMP\bore_err.txt"
           "" | Set-Content $logOut
+          "" | Set-Content $logErr
 
-          Start-Process -FilePath $boreExe `
+          Start-Process -FilePath $boreExe.FullName `
             -ArgumentList "local 3389 --to bore.pub" `
             -RedirectStandardOutput $logOut `
+            -RedirectStandardError $logErr `
             -NoNewWindow -PassThru | Out-Null
 
           Start-Sleep -Seconds 10
 
-          $output = Get-Content $logOut -Raw -ErrorAction SilentlyContinue
+          $output = (Get-Content $logOut -Raw -ErrorAction SilentlyContinue) + (Get-Content $logErr -Raw -ErrorAction SilentlyContinue)
           $match = [regex]::Match($output, 'bore\.pub:(\d+)')
 
           Write-Host ""
@@ -237,19 +246,18 @@ jobs:
             Write-Host "Address  : bore.pub:$($match.Groups[1].Value)"
           } else {
             Write-Host "Address  : bore.pub (see logs for port)"
-            Write-Host "Raw output: $output"
+            Write-Host "stdout: $((Get-Content $logOut -Raw -ErrorAction SilentlyContinue))"
+            Write-Host "stderr: $((Get-Content $logErr -Raw -ErrorAction SilentlyContinue))"
           }
           Write-Host "Username : RDP   (or Administrator)"
           Write-Host "Password : 12345"
           Write-Host "==============================="
-          Write-Host "Virtual GPU     : Installed"
-          Write-Host "Java 17         : Installed"
-          Write-Host "Arabic Language : Configured (ar-SA)"
           Write-Host "YouTube Video   : Downloaded to Desktop"
+          Write-Host "Virtual Camera  : OBS (YouTube video as camera)"
           Write-Host "==============================="
 
           while ($true) {
-            $out = Get-Content $logOut -Raw -ErrorAction SilentlyContinue
+            $out = (Get-Content $logOut -Raw -ErrorAction SilentlyContinue) + (Get-Content $logErr -Raw -ErrorAction SilentlyContinue)
             $m = [regex]::Match($out, 'bore\.pub:(\d+)')
             if ($m.Success) {
               Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] RDP Active - bore.pub:$($m.Groups[1].Value)"
